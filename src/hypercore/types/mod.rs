@@ -264,6 +264,9 @@ pub enum Subscription {
     /// Fill events for user
     #[display("userFills({user})")]
     UserFills { user: Address },
+    /// Real-time asset context (funding rate, mark price, open interest)
+    #[display("activeAssetCtx({coin})")]
+    ActiveAssetCtx { coin: String },
 }
 
 /// Hyperliquid websocket message.
@@ -335,6 +338,8 @@ pub enum Incoming {
     OrderUpdates(Vec<OrderUpdate>),
     /// Fill events for a user
     UserFills { user: Address, fills: Vec<Fill> },
+    /// Real-time asset context update (funding rate, mark price, etc.)
+    ActiveAssetCtx { coin: String, ctx: AssetContext },
     /// Server heartbeat ping
     Ping,
     /// Server heartbeat pong
@@ -1688,10 +1693,12 @@ pub struct OrderRequest {
     #[serde(rename = "b")]
     pub is_buy: bool,
     /// Limit price for the order.
-    #[serde(rename = "p", with = "rust_decimal::serde::str")]
+    /// Uses normalized serialization (removes trailing zeros) for consistent hashing.
+    #[serde(rename = "p", with = "super::utils::decimal_normalized")]
     pub limit_px: Decimal,
     /// Order size in base asset units.
-    #[serde(rename = "s", with = "rust_decimal::serde::str")]
+    /// Uses normalized serialization (removes trailing zeros) for consistent hashing.
+    #[serde(rename = "s", with = "super::utils::decimal_normalized")]
     pub sz: Decimal,
     /// When `true`, the order can only reduce an existing position.
     #[serde(rename = "r")]
@@ -1720,7 +1727,7 @@ pub enum OrderTypePlacement {
     #[serde(rename_all = "camelCase")]
     Trigger {
         is_market: bool,
-        #[serde(with = "rust_decimal::serde::str")]
+        #[serde(with = "super::utils::decimal_normalized")]
         trigger_px: Decimal,
         tpsl: TpSl,
     },
@@ -2027,7 +2034,7 @@ pub struct CumulativeFunding {
 /// Historical funding rate record.
 ///
 /// Represents a single funding rate snapshot for a perpetual market.
-/// Funding rates are typically applied every 8 hours.
+/// Hyperliquid pays funding every hour.
 ///
 /// # Fields
 ///
@@ -2069,12 +2076,10 @@ pub struct FundingRate {
 }
 
 impl FundingRate {
-    /// Returns the annualized funding rate (assuming 3 funding periods per day).
-    ///
-    /// Funding typically occurs every 8 hours (3 times per day).
+    /// Returns the annualized funding rate.
     #[must_use]
     pub fn annualized_rate(&self) -> Decimal {
-        self.funding_rate * Decimal::from(3 * 365)
+        self.funding_rate * Decimal::from(24 * 365)
     }
 
     /// Returns true if the funding rate is positive (longs pay shorts).
@@ -2087,6 +2092,94 @@ impl FundingRate {
     #[must_use]
     pub fn is_negative(&self) -> bool {
         self.funding_rate < Decimal::ZERO
+    }
+}
+
+/// Real-time asset context from activeAssetCtx WebSocket subscription.
+///
+/// Contains live funding rate, open interest, mark/oracle prices, and other
+/// real-time market metrics for a perpetual contract.
+///
+/// # Fields
+///
+/// - `funding`: Current hourly funding rate
+/// - `open_interest`: Total open interest in the market
+/// - `mark_px`: Mark price used for liquidations
+/// - `oracle_px`: Oracle price from external feed
+/// - `mid_px`: Mid price between best bid and ask
+/// - `premium`: Premium component of the funding rate
+/// - `prev_day_px`: Previous day's closing price
+/// - `day_ntl_vlm`: 24h notional volume
+///
+/// # Example
+///
+/// ```no_run
+/// use hypersdk::hypercore::{self, ws::Event, types::*};
+/// use futures::StreamExt;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// let mut ws = hypercore::mainnet_ws();
+/// ws.subscribe(Subscription::ActiveAssetCtx { coin: "BTC".into() });
+///
+/// while let Some(event) = ws.next().await {
+///     let Event::Message(msg) = event else { continue };
+///     if let Incoming::ActiveAssetCtx { coin, ctx } = msg {
+///         println!("{} funding: {} ({}% APR)",
+///             coin, ctx.funding, ctx.annualized_rate() * rust_decimal::Decimal::from(100));
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetContext {
+    /// Current hourly funding rate
+    #[serde(with = "rust_decimal::serde::str")]
+    pub funding: Decimal,
+    /// Total open interest
+    #[serde(with = "rust_decimal::serde::str")]
+    pub open_interest: Decimal,
+    /// Mark price (used for liquidations)
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub mark_px: Option<Decimal>,
+    /// Oracle price from external feed
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub oracle_px: Option<Decimal>,
+    /// Mid price between best bid/ask
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub mid_px: Option<Decimal>,
+    /// Premium component of funding
+    #[serde(with = "rust_decimal::serde::str")]
+    pub premium: Decimal,
+    /// Previous day closing price
+    #[serde(with = "rust_decimal::serde::str")]
+    pub prev_day_px: Decimal,
+    /// 24h notional volume
+    #[serde(with = "rust_decimal::serde::str")]
+    pub day_ntl_vlm: Decimal,
+    /// Impact prices [bid, ask] for funding calculation
+    #[serde(default)]
+    pub impact_pxs: Option<Vec<String>>,
+}
+
+impl AssetContext {
+    /// Returns the annualized funding rate.
+    #[must_use]
+    pub fn annualized_rate(&self) -> Decimal {
+        self.funding * Decimal::from(24 * 365)
+    }
+
+    /// Returns true if the funding rate is positive (longs pay shorts).
+    #[must_use]
+    pub fn is_positive(&self) -> bool {
+        self.funding > Decimal::ZERO
+    }
+
+    /// Returns true if the funding rate is negative (shorts pay longs).
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        self.funding < Decimal::ZERO
     }
 }
 

@@ -632,7 +632,7 @@ impl Client {
     /// Retrieves historical funding rates for a perpetual market.
     ///
     /// Returns funding rate snapshots for the specified coin within the given time range.
-    /// Funding rates are typically applied every 8 hours.
+    /// Hyperliquid pays funding every hour.
     ///
     /// # Parameters
     ///
