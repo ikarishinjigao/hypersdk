@@ -190,7 +190,9 @@ impl futures::Stream for Stream {
                     return Poll::Ready(Some(ok));
                 }
                 Err(err) => {
-                    log::warn!("unable to parse: {}: {:?}", frame.as_str(), err);
+                    // Use lossy conversion to avoid panic on binary frames
+                    let payload = String::from_utf8_lossy(frame.payload());
+                    log::warn!("unable to parse: {}: {:?}", payload, err);
                 }
             }
         }
