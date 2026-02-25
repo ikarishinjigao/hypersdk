@@ -408,7 +408,12 @@ pub enum Incoming {
     /// Order status changes for a user
     OrderUpdates(Vec<OrderUpdate>),
     /// Fill events for a user
-    UserFills { user: Address, fills: Vec<Fill> },
+    UserFills {
+        #[serde(default)]
+        is_snapshot: bool,
+        user: Address,
+        fills: Vec<Fill>,
+    },
     /// User events for a user (funding, liquidation, non-user-cancel)
     UserEvents(UserEvent),
     /// TWAP slice fill updates for a user
