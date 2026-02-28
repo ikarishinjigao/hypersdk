@@ -3049,6 +3049,13 @@ pub(super) enum InfoRequest {
     UserFills {
         user: Address,
     },
+    UserFillsByTime {
+        user: Address,
+        #[serde(rename = "startTime")]
+        start_time: u64,
+        #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+    },
     OrderStatus {
         user: Address,
         #[serde(with = "super::utils::oid_or_cloid")]
