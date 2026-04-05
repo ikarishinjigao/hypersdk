@@ -61,7 +61,7 @@ use crate::hypercore::{
     OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, OkResponse, Response,
-        SignersConfig, VaultTransfer,
+        SignersConfig, UpdateLeverage, VaultTransfer,
     },
     mainnet_url, testnet_url,
     types::{
@@ -1573,6 +1573,67 @@ impl Client {
                 }
                 _ => anyhow::bail!("spot_send: unexpected response type: {resp:?}"),
             }
+        }
+    }
+
+    /// Update leverage for a perpetual asset.
+    ///
+    /// Sets the leverage and margin mode (cross or isolated) for a specific asset.
+    /// This must be called before opening a position to ensure the correct leverage
+    /// is applied.
+    ///
+    /// # Arguments
+    ///
+    /// * `signer` - The signer for authentication
+    /// * `asset` - The asset index (from [`PerpMarket::index`])
+    /// * `is_cross` - `true` for cross margin, `false` for isolated margin
+    /// * `leverage` - The desired leverage value (e.g., 10 for 10x)
+    /// * `nonce` - Unique nonce for this request
+    /// * `vault_address` - Optional vault address if trading on behalf of a vault
+    /// * `expires_after` - Optional expiry time for the request
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use hypersdk::hypercore::{self, PrivateKeySigner, NonceHandler};
+    ///
+    /// let client = hypercore::mainnet();
+    /// let signer: PrivateKeySigner = "0x...".parse()?;
+    /// let nonce_handler = NonceHandler::default();
+    ///
+    /// // Set BTC (asset 0) to 10x cross margin
+    /// client.update_leverage(&signer, 0, true, 10, nonce_handler.next(), None, None).await?;
+    /// ```
+    pub async fn update_leverage<S: SignerSync>(
+        &self,
+        signer: &S,
+        asset: usize,
+        is_cross: bool,
+        leverage: u32,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let resp = self
+            .sign_and_send_sync(
+                signer,
+                Action::UpdateLeverage(UpdateLeverage {
+                    asset,
+                    is_cross,
+                    leverage,
+                }),
+                nonce,
+                vault_address,
+                expires_after,
+            )
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => {
+                anyhow::bail!("update_leverage: {err}")
+            }
+            _ => anyhow::bail!("update_leverage: unexpected response type: {resp:?}"),
         }
     }
 
