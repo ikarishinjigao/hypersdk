@@ -89,6 +89,8 @@ pub enum Action {
     ConvertToMultiSigUser(ConvertToMultiSigUser),
     /// Update isolated margin.
     UpdateIsolatedMargin(UpdateIsolatedMargin),
+    /// Update leverage for a perpetual asset.
+    UpdateLeverage(UpdateLeverage),
     /// Deposit or withdraw from a vault.
     VaultTransfer(VaultTransfer),
     /// Multi-sig action.
@@ -194,6 +196,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -285,6 +288,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -374,6 +378,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let expires_after =
@@ -666,6 +671,22 @@ pub struct UpdateIsolatedMargin {
     pub ntli: u64,
 }
 
+/// Request to update leverage for a perpetual asset.
+///
+/// Sets the leverage and margin mode (cross or isolated) for a specific asset.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#update-leverage>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLeverage {
+    /// Asset index of the perpetual.
+    pub asset: usize,
+    /// `true` for cross margin, `false` for isolated margin.
+    pub is_cross: bool,
+    /// Leverage value (e.g., 10 for 10x).
+    pub leverage: u32,
+}
+
 /// Deposit or withdraw USDC from a vault.
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#vault-transfer>
@@ -890,6 +911,31 @@ mod tests {
         if let Action::VaultTransfer(vt) = deserialized {
             assert!(vt.is_deposit);
             assert_eq!(vt.usd, 100_500_000);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn update_leverage_serialization() {
+        let action = Action::UpdateLeverage(UpdateLeverage {
+            asset: 0,
+            is_cross: true,
+            leverage: 10,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"updateLeverage\""));
+        assert!(json.contains("\"asset\":0"));
+        assert!(json.contains("\"isCross\":true"));
+        assert!(json.contains("\"leverage\":10"));
+
+        // Round-trip
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        if let Action::UpdateLeverage(ul) = deserialized {
+            assert_eq!(ul.asset, 0);
+            assert!(ul.is_cross);
+            assert_eq!(ul.leverage, 10);
         } else {
             panic!("wrong variant");
         }
