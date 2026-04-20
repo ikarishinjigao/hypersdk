@@ -6,13 +6,13 @@
 
 use alloy::{
     dyn_abi::TypedData,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256},
     signers::{Signer, SignerSync, k256::ecdsa::RecoveryId},
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::serde_as;
 
 use super::solidity;
 use crate::hypercore::{
@@ -725,9 +725,10 @@ pub struct GossipPriorityBid {
     pub slot_id: u8,
     /// IP address to receive prioritized gossip data.
     pub ip: String,
-    /// Maximum HYPE to bid in wei (1 HYPE = 1e18 wei).
-    #[serde_as(as = "DisplayFromStr")]
-    pub max_gas: U256,
+    /// Maximum HYPE to bid in wei (1 HYPE = 10^18 wei).
+    ///
+    /// Serialized as a plain JSON number since Hyperliquid's API accepts u64-safe values.
+    pub max_gas: u64,
 }
 
 /// Multi-signature action payload.

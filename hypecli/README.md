@@ -92,6 +92,62 @@ hypecli balance 0x1234... --skip-hip3
 
 Shows spot balances, perp account details (account value, margin used, withdrawable, positions), and all HIP-3 DEX balances. Use `--skip-hip3` to skip DEX queries.
 
+### Gossip Priority (Dutch Auction)
+
+Hyperliquid's gossip network uses 5 Dutch auction slots (indices 0–4) for read-priority ordering. When you win a slot, your node receives transaction data ~10ms faster per slot level before non-winners see it. All 5 slots reset on a synchronized cycle (~3 minutes).
+
+**How it works:**
+
+| `currentGas`       | Meaning                                              |
+|--------------------|------------------------------------------------------|
+| not null           | Auction RUNNING at displayed price. You can bid now. |
+| null               | Settled — winner set or no bids placed this cycle.   |
+
+When you bid, you pay the **live `currentGas` price** at TX mining time — not your ceiling (`--max`). The difference is refunded automatically. Winning bid amounts are burned from your spot HYPE balance.
+
+Lower slot index = higher priority:
+
+```
+Slot 0 → ~50ms faster than no-bid nodes
+Slot 1 → ~40ms faster
+Slot 2 → ~30ms faster
+Slot 3 → ~20ms faster
+Slot 4 → ~10ms faster
+```
+
+**Check current prices:**
+
+```bash
+hypecli prio status
+```
+
+Output shows when the current cycle started and live prices for all slots:
+
+```
+started 2026-04-20 14:45:00 UTC
+
+Slot          Start      Current      End/Min
+------------------------------------------------
+0               1.0      0.50157            -
+1               1.0        0.1000            -
+2               0.1        0.1000            -
+...
+```
+
+`Start` is the opening price, `Current` is the live decaying Dutch price, `End/Min` is the floor (set after settlement).
+
+**Place a bid:**
+
+```bash
+hypecli prio bid \
+  --keystore if_dev \
+  --ip 52.196.250.75 \
+  --max 1 \
+  --slot 0
+```
+
+If `currentGas == 0.50157`, you pay exactly `0.50157 HYPE` at mining time. Any amount between `currentGas` and `--max` is refunded. If `currentGas >= --max`, bidding is skipped.
+
 ### Features
 
 #### Multi-Signature Transactions (P2P)

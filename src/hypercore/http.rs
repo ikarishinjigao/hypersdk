@@ -45,7 +45,7 @@ use std::{
 };
 
 use alloy::{
-    primitives::{Address, U256},
+    primitives::Address,
     signers::{Signer, SignerSync},
 };
 use anyhow::{Result, anyhow};
@@ -60,8 +60,8 @@ use crate::hypercore::{
     ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus,
     MultiSigConfig, OidOrCloid, OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
-        Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, GossipPriorityBid,
-        OkResponse, Response, SignersConfig, UpdateLeverage, VaultTransfer,
+        Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, GossipPriorityBid, OkResponse,
+        Response, SignersConfig, UpdateLeverage, VaultTransfer,
     },
     mainnet_url, testnet_url,
     types::{
@@ -1141,23 +1141,19 @@ impl Client {
         signer: &S,
         slot_id: u8,
         ip: impl Into<String>,
-        max_gas: U256,
+        max_gas: u64,
         nonce: u64,
         vault_address: Option<Address>,
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<Response> {
-        self.sign_and_send_sync(
-            signer,
-            GossipPriorityBid {
-                slot_id,
-                ip: ip.into(),
-                max_gas,
-            },
-            nonce,
-            vault_address,
-            expires_after,
-        )
-        .await
+        // Debug: print the action JSON to diagnose serialization issues.
+        let action = GossipPriorityBid {
+            slot_id,
+            ip: ip.into(),
+            max_gas,
+        };
+        self.sign_and_send_sync(signer, action, nonce, vault_address, expires_after)
+            .await
     }
 
     /// Query the current gossip priority auction status.
