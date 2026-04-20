@@ -42,14 +42,17 @@ struct FillOutput {
 /// Serializable basic order data for JSON output.
 #[derive(Serialize)]
 struct OrderOutput {
+    timestamp: u64,
     coin: String,
     side: String,
-    px: Decimal,
+    limit_px: Decimal,
     sz: Decimal,
     oid: u64,
-    status: String,
-    filled: Decimal,
+    orig_sz: Decimal,
     cloid: Option<String>,
+    order_type: String,
+    tif: Option<String>,
+    reduce_only: bool,
 }
 
 /// Query commands.
@@ -136,16 +139,20 @@ impl ListOrdersCmd {
         println!("Historical Orders ({} found):\n", orders.len());
 
         for order in orders {
-            let status = order.status.to_string();
-            let side = order.side.to_string();
-            println!("  {} | {} | {} @ {}", status, side, order.sz, order.px);
+            let ts = chrono::DateTime::from_timestamp_millis(order.timestamp as i64)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| format!("{}ms", order.timestamp));
+            println!("  {} | {:?} | {} {} @ {}", ts, order.order_type, order.side, order.sz, order.limit_px);
             println!("    Coin:      {}", order.coin);
             println!("    OID:       {}", order.oid);
             if let Some(ref cloid) = order.cloid {
                 println!("    CLOID:     {}", cloid);
             }
-            if order.filled != Decimal::ZERO {
-                println!("    Filled:    {} / {}", order.filled, order.sz);
+            if order.reduce_only {
+                println!("    reduce-only");
+            }
+            if let Some(tif) = order.tif {
+                println!("    TIF:       {:?}", tif);
             }
             println!();
         }
@@ -158,18 +165,18 @@ impl ListOrdersCmd {
         orders: &[hypersdk::hypercore::types::BasicOrder],
     ) -> anyhow::Result<()> {
         let mut writer = tabwriter::TabWriter::new(std::io::stdout());
-        writeln!(writer, "status\tcoin\tside\tpx\tsize\tfilled\toid\tcloid")?;
+        writeln!(writer, "timestamp\tcoin\tside\tlimit_px\tsz\torig_sz\toid\tcloid")?;
 
         for order in orders {
             writeln!(
                 writer,
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                order.status,
+                order.timestamp,
                 order.coin,
                 order.side,
-                order.px,
+                order.limit_px,
                 order.sz,
-                order.filled,
+                order.orig_sz,
                 order.oid,
                 order.cloid.as_ref().map(|c| c.to_string()).unwrap_or_else(|| "-".to_string())
             )?;
@@ -185,14 +192,17 @@ impl ListOrdersCmd {
         let output: Vec<OrderOutput> = orders
             .iter()
             .map(|o| OrderOutput {
+                timestamp: o.timestamp,
                 coin: o.coin.clone(),
                 side: o.side.to_string(),
-                px: o.px,
+                limit_px: o.limit_px,
                 sz: o.sz,
                 oid: o.oid,
-                status: o.status.to_string(),
-                filled: o.filled,
+                orig_sz: o.orig_sz,
                 cloid: o.cloid.as_ref().map(|c| c.to_string()),
+                order_type: format!("{:?}", o.order_type),
+                tif: o.tif.map(|t| format!("{:?}", t)),
+                reduce_only: o.reduce_only,
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -292,7 +302,7 @@ impl FillsCmd {
                 println!("    Closed PnL:   {}", fill.closed_pnl);
             }
             if let Some(ref liq) = fill.liquidation {
-                println!("    Liquidation:  {}", liq);
+                println!("    Liquidation:  {:?}", liq);
             }
             println!("    OID:          {} | Hash: {}", fill.oid, &fill.hash[..8.min(fill.hash.len())]);
             println!();

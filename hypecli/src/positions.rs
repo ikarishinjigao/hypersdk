@@ -44,8 +44,9 @@ struct LeverageOutput {
 
 #[derive(Serialize)]
 struct CumFundingOutput {
-    prev: Decimal,
-    next: Decimal,
+    all_time: Decimal,
+    since_open: Decimal,
+    since_change: Decimal,
 }
 
 /// Query open perpetual positions for a user.
@@ -144,16 +145,14 @@ impl PositionsCmd {
             if let Some(liq_px) = p.liquidation_px {
                 println!("  LiquidationPx:  {}", liq_px);
             }
-            let (lev_type, lev_val) = match &p.leverage {
-                hypersdk::hypercore::types::Leverage::Cross(v) => ("cross", v.value),
-                hypersdk::hypercore::types::Leverage::Isolated(v) => {
-                    ("isolated", v.value)
-                }
+            let lev_type = match p.leverage.leverage_type {
+                hypersdk::hypercore::types::LeverageType::Cross => "cross",
+                hypersdk::hypercore::types::LeverageType::Isolated => "isolated",
             };
-            println!("  Leverage:       {}x ({})", lev_val, lev_type);
+            println!("  Leverage:       {}x ({})", p.leverage.value, lev_type);
             println!(
-                "  Funding:        prev={} next={}",
-                p.cum_funding.prev_funding_payment, p.cum_funding.next_funding_payment
+                "  Funding:        all_time={} since_open={} since_change={}",
+                p.cum_funding.all_time, p.cum_funding.since_open, p.cum_funding.since_change
             );
             println!();
         }
@@ -164,7 +163,7 @@ impl PositionsCmd {
             .map(|p| &p.position.unrealized_pnl)
             .sum();
         let total_value: Decimal = positions.iter().map(|p| &p.position.position_value).sum();
-        println!("─".repeat(45));
+        println!("{}", "=".repeat(45));
         println!("Total unrealized PnL: {}", total_pnl);
         println!("Total position value: {}", total_value);
 
@@ -192,16 +191,13 @@ impl PositionsCmd {
                 .entry_px
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            let lev = match &p.leverage {
-                hypersdk::hypercore::types::Leverage::Cross(v) => v.value,
-                hypersdk::hypercore::types::Leverage::Isolated(v) => v.value,
-            };
+            let lev_val = p.leverage.value;
             let side = if p.is_long() { "long" } else { "short" };
 
             writeln!(
                 writer,
                 "{}\t{}\t{}\t{}\t{}\t{}x\t{}",
-                p.coin, p.szi, entry_px, liq_px, p.unrealized_pnl, lev, side
+                p.coin, p.szi, entry_px, liq_px, p.unrealized_pnl, lev_val, side
             )?;
         }
 
@@ -216,22 +212,15 @@ impl PositionsCmd {
         let output: Vec<PositionOutput> = positions
             .iter()
             .map(|p| {
-                let (lev_type, lev_val) = match &p.position.leverage {
-                    hypersdk::hypercore::types::Leverage::Cross(v) => {
-                        ("cross".to_string(), v.value)
-                    }
-                    hypersdk::hypercore::types::Leverage::Isolated(v) => {
-                        ("isolated".to_string(), v.value)
-                    }
+                let lev_val = p.position.leverage.value;
+                let lev_type_str = match p.position.leverage.leverage_type {
+                    hypersdk::hypercore::types::LeverageType::Cross => "cross",
+                    hypersdk::hypercore::types::LeverageType::Isolated => "isolated",
                 };
                 PositionOutput {
                     coin: p.position.coin.clone(),
                     size: p.position.szi,
-                    side: if p.position.is_long() {
-                        "long".to_string()
-                    } else {
-                        "short".to_string()
-                    },
+                    side: if p.position.is_long() { "long".to_string() } else { "short".to_string() },
                     entry_price: p.position.entry_px,
                     current_value: p.position.position_value,
                     unrealized_pnl: p.position.unrealized_pnl,
@@ -239,12 +228,13 @@ impl PositionsCmd {
                     liquidation_px: p.position.liquidation_px,
                     margin_used: p.position.margin_used,
                     leverage: LeverageOutput {
-                        r#type: lev_type,
+                        r#type: lev_type_str.to_string(),
                         value: lev_val,
                     },
                     cum_funding: CumFundingOutput {
-                        prev: p.position.cum_funding.prev_funding_payment,
-                        next: p.position.cum_funding.next_funding_payment,
+                        all_time: p.position.cum_funding.all_time,
+                        since_open: p.position.cum_funding.since_open,
+                        since_change: p.position.cum_funding.since_change,
                     },
                 }
             })
