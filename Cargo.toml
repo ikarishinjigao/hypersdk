@@ -124,6 +124,10 @@ name = "subaccounts"
 path = "examples/hypercore/subaccounts.rs"
 
 [[example]]
+name = "priority-fee-bid"
+path = "examples/hypercore/priority-fee-bid.rs"
+
+[[example]]
 name = "morpho_borrow_apy"
 path = "examples/morpho/borrow_apy.rs"
 

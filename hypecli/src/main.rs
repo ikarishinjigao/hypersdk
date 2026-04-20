@@ -4,6 +4,7 @@ mod markets;
 mod morpho;
 mod multisig;
 mod orders;
+mod prio;
 mod send;
 mod subscribe;
 mod to_multisig;
@@ -18,6 +19,7 @@ use markets::{DexesCmd, PerpsCmd, SpotCmd};
 use morpho::{MorphoApyCmd, MorphoPositionCmd, MorphoVaultApyCmd};
 use multisig::MultiSigCmd;
 use orders::OrderCmd;
+use prio::PrioCmd;
 use send::SendCmd;
 use subscribe::SubscribeCmd;
 use to_multisig::ToMultiSigCmd;
@@ -72,6 +74,9 @@ enum Command {
     /// Vault deposit and withdrawal commands
     #[command(subcommand)]
     Vault(VaultCmd),
+    /// Gossip priority auction: query status or place a bid
+    #[command(subcommand)]
+    Prio(PrioCmd),
 }
 
 impl Command {
@@ -91,6 +96,7 @@ impl Command {
             Self::Subscribe(cmd) => cmd.run().await,
             Self::Send(cmd) => cmd.run().await,
             Self::Vault(cmd) => cmd.run().await,
+            Self::Prio(cmd) => cmd.run().await,
         }
     }
 }
@@ -337,6 +343,31 @@ Convert Multi-Sig to Normal User:
     --chain mainnet \
     --private-key <HEX> \
     --multi-sig-addr <MULTISIG_ADDRESS>
+
+GOSSIP PRIORITY AUCTION COMMANDS
+--------------------------------
+
+Query Auction Status:
+  hypecli prio status
+
+  Shows current winning prices, time remaining, and winners for all 5 slots (0–4).
+  Slot 0 = highest priority (~10ms faster than slot 1, etc.).
+
+Place a Priority Bid:
+  hypecli prio bid \
+    --chain mainnet \
+    --private-key <HEX> \
+    --max 0.5 \
+    --ip 203.0.113.42 \
+    --slot 0
+
+  Arguments:
+    --max <HYPE>       Maximum bid in HYPE units (not wei). 1 HYPE = 1e18 wei.
+    --ip <ADDRESS>     IP address to receive prioritized gossip data.
+    --slot <0-4>       Slot index (default: 0, highest priority).
+
+  The winning bid amount is deducted from your spot HYPE balance and burned.
+  Use `hypecli prio status` first to decide how much to bid.
 
 EXAMPLE WORKFLOWS
 -----------------
