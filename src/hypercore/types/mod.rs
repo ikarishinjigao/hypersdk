@@ -88,7 +88,7 @@ pub mod api;
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
-pub use api::{Action, ActionRequest, MultiSigAction, MultiSigPayload};
+pub use api::{Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload};
 // Import from raw module (which is now a submodule)
 use api::{SendAssetAction, SpotSendAction, UsdSendAction};
 
@@ -2813,6 +2813,34 @@ pub struct VaultDetails {
     pub always_close_on_withdraw: bool,
 }
 
+/// Response for gossip priority auction status.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipPriorityAuctionStatus {
+    /// All slots in this auction cycle.
+    pub slots: Vec<GossipPrioritySlot>,
+}
+
+/// One slot in a gossip priority auction.
+///
+/// Lower slot_id = higher priority (~10ms faster per slot).
+/// Each slot runs a Dutch auction that resets to 10x the previous winning price
+/// each 3-minute cycle (minimum 0.1 HYPE).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipPrioritySlot {
+    /// Slot index (0–4).
+    pub slot_id: u8,
+    /// Current Dutch auction price in HYPE.
+    pub price: String,
+    /// Seconds remaining in this auction cycle.
+    pub secs_remaining: u64,
+    /// IP address of the current winner (empty if no winner).
+    pub winner: String,
+}
+
 /// Vault relationship type.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3180,9 +3208,9 @@ pub(super) enum InfoRequest {
         user: Address,
     },
     OutcomeMeta,
+    /// Query gossip priority auction status.
+    GossipPriorityAuctionStatus,
 }
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::hypercore::types::api::Response;
