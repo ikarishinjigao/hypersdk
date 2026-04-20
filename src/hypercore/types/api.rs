@@ -12,6 +12,7 @@ use alloy::{
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
 
 use super::solidity;
 use crate::hypercore::{
@@ -716,6 +717,7 @@ pub struct VaultTransfer {
 /// priority. Fees are deducted from the spot HYPE balance and burned.
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GossipPriorityBid {
@@ -724,6 +726,7 @@ pub struct GossipPriorityBid {
     /// IP address to receive prioritized gossip data.
     pub ip: String,
     /// Maximum HYPE to bid in wei (1 HYPE = 1e18 wei).
+    #[serde_as(as = "DisplayFromStr")]
     pub max_gas: U256,
 }
 
