@@ -25,7 +25,7 @@
 
 use clap::{Args, Subcommand};
 use hypersdk::hypercore::types::{OkResponse, Response};
-use hypersdk::hypercore::{HttpClient, NonceHandler, Chain};
+use hypersdk::hypercore::{Chain, HttpClient, NonceHandler};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 
@@ -158,7 +158,8 @@ impl BidCmd {
             .map_err(|_| anyhow::anyhow!("--max too large"))?;
 
         let status = client.gossip_priority_auction_status().await?;
-        let slot = status.get(self.slot as usize)
+        let slot = status
+            .get(self.slot as usize)
             .ok_or_else(|| anyhow::anyhow!("invalid slot {}", self.slot))?;
 
         let current: u64 = slot
@@ -170,7 +171,8 @@ impl BidCmd {
         if current >= max_gas && current > 0 {
             println!(
                 "Leader {} >= max {}; not bidding.",
-                fmt_wei(current, decimals), self.max
+                fmt_wei(current, decimals),
+                self.max
             );
             return Ok(());
         }

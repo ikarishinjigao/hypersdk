@@ -12,7 +12,7 @@
 
 use clap::Parser;
 use hypersdk::hypercore::types::GossipPriorityAuctionStatus;
-use hypersdk::{hypercore, U256};
+use hypersdk::{hypercore, hyperevm};
 use rust_decimal::Decimal;
 
 mod credentials;
@@ -23,7 +23,7 @@ use credentials::Credentials;
 struct Cli {
     #[command(flatten)]
     credentials: Credentials,
-    /// Maximum HYPE to bid (in HYPE, not wei — 1 HYPE = 1e18 wei).
+    /// Maximum HYPE to bid (in HYPE, not wei).
     #[arg(long)]
     max: Decimal,
     /// IP address to receive prioritized gossip data.
@@ -89,17 +89,26 @@ async fn main() -> anyhow::Result<()> {
     let status = client.gossip_priority_auction_status().await?;
     print_auction_status(&status);
 
-    // 2. Build max_gas in wei from --max HYPE.
-    // 1 HYPE = 1e18 wei.
-    let max_hype: f64 = args.max.try_into()?;
-    let max_gas = U256::from((max_hype * 1e18) as u128);
+    // 2. Determine HYPE decimals dynamically from the network.
+    let decimals = client
+        .spot_tokens()
+        .await?
+        .into_iter()
+        .find(|t| t.name == "HYPE")
+        .map(|t| t.wei_decimals as u32)
+        .unwrap_or(8);
+
+    // Build max_gas in wei using discovered decimals.
+    let max_gas: u64 = hyperevm::to_wei(args.max, decimals)
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("--max too large"))?;
 
     println!(
-        "\nBidding on slot {} for IP {} with max {} HYPE ({} wei)",
+        "\nBidding on slot {} for IP {} with max {} HYPE ({} decimals)",
         args.slot,
         args.ip,
         args.max,
-        max_gas
+        decimals
     );
 
     // 3. Submit the signed bid to /exchange.
