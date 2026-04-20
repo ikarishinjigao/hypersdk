@@ -13,19 +13,18 @@
 //! ## How the Dutch auction works
 //!
 //! Each slot resets at the start of a cycle. The opening price is **10x the previous
-//! cycle's winning price**, decreasing linearly over the 3 minutes. Minimum price is
+//! cycle's winning price**, decreasing linearly over 180 seconds. Minimum price is
 //! **0.1 HYPE**. You pay the price at the moment your bid lands — if it's above the
 //! current Dutch auction price, you win and the difference is refunded.
 //!
 //! Example: If the previous cycle's winning price for slot 0 was 0.05 HYPE, the next
 //! cycle opens at 0.5 HYPE and decreases to 0.1 HYPE over 180 seconds.
 //!
-//! ## Current state visibility
+//! ## Verifying your win
 //!
-//! There is **no per-user query endpoint** to see "my bids" directly. After placing
-//! a bid, run `hypecli prio status` and check the `Winner` column for your IP. If
-//! your IP appears there, you won. Re-running status throughout the cycle shows
-//! whether you've been outbid.
+//! After placing a bid, run `hypecli prio status` again and compare:
+//! - **currentGas** increased → your bid landed (you won if it equals max_gas)
+//! - **currentGas** unchanged → outbid or not yet high enough
 //!
 //! <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
 
@@ -44,19 +43,19 @@ use crate::utils::find_signer_sync;
 
 /// Gossip priority auction commands.
 ///
-/// Run `hypecli prio status` first to see the current prices, time remaining, and
-/// active winners for all 5 slots. Use those prices to decide your `--max` bid.
+/// Run `hypecli prio status` first to see the current Dutch auction prices and
+/// time remaining for all 5 slots. Use those prices to decide your `--max` bid.
 #[derive(Subcommand)]
 pub enum PrioCmd {
     /// Query the current gossip priority auction status.
     ///
-    /// Shows winning prices, time remaining, and current winner (IP) for all 5 slots.
+    /// Shows Dutch auction parameters and time remaining for all 5 slots.
     /// Use this to decide how much to bid before running `hypecli prio bid`.
     Status(StatusCmd),
     /// Place a signed bid on a gossip priority slot.
     ///
     /// The fee is deducted from your spot HYPE balance and burned. To verify you won,
-    /// re-run `hypecli prio status` afterward and look for your IP in the Winner column.
+    /// re-run `hypecli prio status` afterward and look for an updated `currentGas`.
     Bid(BidCmd),
 }
 
@@ -73,14 +72,22 @@ impl PrioCmd {
 ///
 /// ## Output fields
 ///
-/// | Column         | Description                                                          |
-/// |----------------|----------------------------------------------------------------------|
-/// | Slot           | Index 0–4 (lower = higher priority, ~10ms faster per slot)          |
-/// | Price (HYPE)   | Current Dutch auction price. Resets to 10× last winner each cycle.   |
-/// | Time Left      | Seconds until the next 3-minute cycle resets.                         |
-/// | Winner         | IP address of the current leader (if any).                           |
+/// | Column          | Description                                                          |
+/// |-----------------|----------------------------------------------------------------------|
+/// | Slot            | Index 0–4 (lower = higher priority, ~10ms faster per slot)          |
+/// | Start (HYPE)    | Opening price for this auction cycle.                                |
+/// | Current (HYPE)  | Live Dutch auction price right now (or "(no bid)" if none landed).   |
+/// | End / Min       | Floor price for this slot (typically 0.1 HYPE).                      |
+/// | Time Left       | Seconds until the next 3-minute cycle resets.                         |
 ///
-/// Run this before bidding to gauge competitive prices.
+/// ## How to read the prices
+///
+/// Prices decrease linearly from **Start** to **End** over the 3-minute window.
+/// A live price of `(no bid)` with `currentGas: null` means no winner yet this cycle.
+/// Winning bids are determined by whichever valid bid arrives first while the price
+/// exceeds their `maxGas` limit.
+//
+// Run this before bidding to gauge competitive prices.
 #[derive(Args)]
 pub struct StatusCmd {}
 
@@ -91,48 +98,62 @@ impl StatusCmd {
         println!("Fetching gossip priority auction status...");
         let status = client.gossip_priority_auction_status().await?;
 
-        // Determine cycle progress indicator
-        let cycle_len = 180u64;
-        let progress = status
-            .slots
-            .first()
-            .map(|s| cycle_len.saturating_sub(s.secs_remaining))
-            .unwrap_or(0);
-        let progress_pct = (progress as f64 / cycle_len as f64 * 100.0).round() as u32;
+        // Compute overall cycle progress from the first slot.
+        let now = chrono::Utc::now().timestamp() as u64;
+        let (progress_pct, earliest_end) = if let Some(first) = status.first() {
+            let elapsed = now.saturating_sub(first.start_time_seconds);
+            let pct = (elapsed as f64 / first.duration_seconds as f64 * 100.0).round() as u32;
+            let end = first.start_time_seconds + first.duration_seconds;
+            (pct, end)
+        } else {
+            (0, 0u64)
+        };
+
+        let secs_left = earliest_end.saturating_sub(now);
 
         println!(
-            "\nDutch auction status — {}% through 3-minute cycle",
-            progress_pct
+            "\nDutch auction status — {}% through {}-second cycle ({}s remaining)",
+            progress_pct,
+            status.first().map(|s| s.duration_seconds).unwrap_or(180),
+            secs_left
         );
         println!(
-            "{:<6} {:>16} {:>12} {}",
-            "Slot", "Price (HYPE)", "Time Left", "Winner"
+            "{:<6} {:>12} {:>14} {:>12} {:>12}",
+            "Slot", "Start", "Current", "End/Min", "Time"
         );
         println!("{}", "-".repeat(60));
 
-        for slot in &status.slots {
-            let time = if slot.secs_remaining == 0 {
-                "Expired".to_string()
-            } else {
-                format!("{}s", slot.secs_remaining)
-            };
-            let winner = if slot.winner.is_empty() {
-                "(none)".to_string()
-            } else {
-                slot.winner.clone()
-            };
+        for (i, slot) in status.iter().enumerate() {
+            let elapsed = now.saturating_sub(slot.start_time_seconds);
+            let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
 
-            // Highlight your slot (slot 0 is highest priority)
-            let marker = if slot.slot_id == 0 { " ← top priority" } else { "" };
+            // Compute current price from linear interpolation.
+            let start: Decimal = slot.start_gas.parse().unwrap_or_default();
+            let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+            let current_price = start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
+
+            let current_str = if slot.current_gas.is_some() {
+                format!("{:.4}", current_price)
+            } else {
+                "(no bid)".to_string()
+            };
+            let time_str = format!("{}s", secs_left);
+            let marker = if i == 0 { " ← top" } else { "" };
+
             println!(
-                "{:<6} {:>16} {:>12} {}{}",
-                slot.slot_id, slot.price, time, winner, marker
+                "{:<6} {:>12} {:>14} {:>12} {:>12}{}",
+                i,
+                slot.start_gas,
+                current_str,
+                slot.end_gas.as_deref().unwrap_or("-"),
+                time_str,
+                marker
             );
         }
 
         println!(
-            "\nTip: Run `hypecli prio status` again after bidding to verify your IP \
-             appears as Winner."
+            "\nTip: Run `hypecli prio status` after bidding and compare `currentGas` \
+             to verify your bid landed."
         );
 
         Ok(())
@@ -157,14 +178,6 @@ impl StatusCmd {
 ///   It stays active for the remainder of the cycle; if the price drops below your
 ///   max before the cycle ends, you win automatically.
 /// - Winning bid amounts are **burned**, not transferred.
-///
-/// ## Verifying success
-///
-/// After submitting, run `hypecli prio status` and check the `Winner` column:
-///
-/// - If your IP appears → you won that slot
-/// - If your IP does not appear → either you're still pending below the price, or
-///   someone else bid higher
 ///
 /// ## Units
 ///
@@ -258,7 +271,7 @@ impl BidCmd {
                 println!("✓ Bid submitted successfully.");
                 println!();
                 println!("Verify your win by checking `hypecli prio status` —");
-                println!("your IP {} should appear under slot {}.", self.ip, self.slot);
+                println!("compare the `currentGas` field to confirm your bid landed.");
             }
             Response::Err(err) => {
                 println!("✗ Bid failed: {err}");
@@ -268,37 +281,48 @@ impl BidCmd {
             }
         }
 
-        // Refresh and print updated status.
+        // Refresh and print updated status with price computation.
         println!("\nRefreshing auction status...");
         let new_status = client.gossip_priority_auction_status().await?;
 
-        println!("\n{:<6} {:>16} {:>12} {}", "Slot", "Price (HYPE)", "Time Left", "Winner");
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        println!(
+            "\n{:<6} {:>12} {:>14} {:>12} {:>12}",
+            "Slot", "Start", "Current", "End/Min", "Time"
+        );
         println!("{}", "-".repeat(60));
 
-        for slot in &new_status.slots {
-            let time = if slot.secs_remaining == 0 {
-                "Expired".to_string()
-            } else {
-                format!("{}s", slot.secs_remaining)
-            };
-            let winner = if slot.winner.is_empty() {
-                "(none)".to_string()
-            } else {
-                slot.winner.clone()
-            };
+        for (i, slot) in new_status.iter().enumerate() {
+            let elapsed = now.saturating_sub(slot.start_time_seconds);
+            let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
 
-            // Emphasize the slot we're targeting
-            if slot.slot_id == self.slot {
+            let start: Decimal = slot.start_gas.parse().unwrap_or_default();
+            let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+            let current_price = start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
+
+            let secs_left = slot.start_time_seconds
+                .saturating_add(slot.duration_seconds)
+                .saturating_sub(now);
+
+            let current_str = if slot.current_gas.is_some() {
+                format!("{:.4}", current_price)
+            } else {
+                "(no bid)".to_string()
+            };
+            let time_str = format!("{}s", secs_left);
+
+            if i == self.slot as usize {
                 writeln!(
                     std::io::stdout(),
-                    "{:<6} {:>16} {:>12} {} ← target",
-                    slot.slot_id, slot.price, time, winner
+                    "{:<6} {:>12} {:>14} {:>12} {:>12} ← target",
+                    i, slot.start_gas, current_str, slot.end_gas.as_deref().unwrap_or("-"), time_str
                 )?;
             } else {
                 writeln!(
                     std::io::stdout(),
-                    "{:<6} {:>16} {:>12} {}",
-                    slot.slot_id, slot.price, time, winner
+                    "{:<6} {:>12} {:>14} {:>12} {:>12}",
+                    i, slot.start_gas, current_str, slot.end_gas.as_deref().unwrap_or("-"), time_str
                 )?;
             }
         }

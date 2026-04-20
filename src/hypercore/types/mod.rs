@@ -89,8 +89,7 @@ pub(super) mod solidity;
 
 // Re-export important raw types for convenience
 pub use api::{
-    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse,
-    Response,
+    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse, Response,
 };
 // Import from raw module (which is now a submodule)
 use api::{SendAssetAction, SpotSendAction, UsdSendAction};
@@ -2816,32 +2815,86 @@ pub struct VaultDetails {
     pub always_close_on_withdraw: bool,
 }
 
-/// Response for gossip priority auction status.
+/// Raw gossip priority auction slot data returned by the Hyperliquid API.
+///
+/// Each element of the outer `slots` array corresponds to one Dutch auction slot
+/// (indices 0–4). Lower index = higher priority (~10 ms faster per slot level).
+///
+/// ## Price discovery
+///
+/// The current price decreases linearly over the `duration_seconds` window starting at
+/// `start_time_seconds`. Callers can compute the live price with:
+///
+/// ```ignore
+/// let now = chrono::Utc::now().timestamp() as u64;
+/// let elapsed = now.saturating_sub(slot.start_time_seconds);
+/// let progress = elapsed as f64 / slot.duration_seconds as f64; // 0.0 → 1.0
+/// let start: Decimal = slot.start_gas.parse()?;
+/// let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+/// let current_price = start - (start - end) * Decimal::from_f64_retain(progress).unwrap();
+/// ```
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GossipPrioritySlot {
+    /// Unix timestamp (seconds) when this auction cycle started.
+    pub start_time_seconds: u64,
+    /// Duration of each Dutch auction cycle in seconds (typically 180).
+    pub duration_seconds: u64,
+    /// Price at which the current cycle opened. Denominated in HYPE as a decimal string.
+    pub start_gas: String,
+    /// Current Dutch auction price, or `None` if no bid has landed yet this cycle.
+    /// Denominated in HYPE as a decimal string.
+    #[serde(default)]
+    pub current_gas: Option<String>,
+    /// Minimum floor price for this slot's Dutch auction (typically "0.1").
+    #[serde(default)]
+    pub end_gas: Option<String>,
+}
+
+/// Gossip priority auction status returned by the `/info` endpoint.
+///
+/// ## Response shape
+///
+/// The raw JSON is a 2-element array:
+/// ```json
+/// [[prev_winner_addrs], [slot0, slot1, slot2, slot3, slot4]]
+/// ```
+///
+/// The first inner array contains the **previous cycle's** winning signer addresses
+/// (or `null`) for slots 0–4. The second inner array contains the current Dutch
+/// auction parameters for each slot.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "RawGossipPriorityAuctionStatus")]
 pub struct GossipPriorityAuctionStatus {
-    /// All slots in this auction cycle.
+    /// Previous-cycle winners' signer addresses (index = slot id), or `None` if
+    /// there was no winner for that slot last cycle.
+    #[allow(dead_code)]
+    pub prev_winners: Vec<Option<String>>,
+    /// Current Dutch auction parameters for all 5 slots (slot id = array index).
     pub slots: Vec<GossipPrioritySlot>,
 }
 
-/// One slot in a gossip priority auction.
-///
-/// Lower slot_id = higher priority (~10ms faster per slot).
-/// Each slot runs a Dutch auction that resets to 10x the previous winning price
-/// each 3-minute cycle (minimum 0.1 HYPE).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GossipPrioritySlot {
-    /// Slot index (0–4).
-    pub slot_id: u8,
-    /// Current Dutch auction price in HYPE.
-    pub price: String,
-    /// Seconds remaining in this auction cycle.
-    pub secs_remaining: u64,
-    /// IP address of the current winner (empty if no winner).
-    pub winner: String,
+impl std::ops::Deref for GossipPriorityAuctionStatus {
+    type Target = Vec<GossipPrioritySlot>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.slots
+    }
+}
+
+// Deserializes [[winners], [slots]] → GossipPriorityAuctionStatus.
+#[derive(Deserialize)]
+struct RawGossipPriorityAuctionStatus(
+    #[allow(dead_code)] Vec<Option<String>>,
+    Vec<GossipPrioritySlot>,
+);
+
+impl From<RawGossipPriorityAuctionStatus> for GossipPriorityAuctionStatus {
+    fn from(raw: RawGossipPriorityAuctionStatus) -> Self {
+        Self { prev_winners: raw.0, slots: raw.1 }
+    }
 }
 
 /// Vault relationship type.
@@ -3214,6 +3267,8 @@ pub(super) enum InfoRequest {
     /// Query gossip priority auction status.
     GossipPriorityAuctionStatus,
 }
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::hypercore::types::api::Response;

@@ -35,24 +35,42 @@ struct Cli {
 }
 
 fn print_auction_status(status: &GossipPriorityAuctionStatus) {
-    println!("\nCurrent auction status (3-minute cycle):");
+    println!("\nCurrent auction status (180-second cycle):");
     println!(
-        "{:<6} {:>14} {:>15} {}",
-        "Slot", "Price (HYPE)", "Time Left", "Winner"
+        "{:<6} {:>12} {:>14} {:>12} {:>10}",
+        "Slot", "Start Gas", "Current Gas", "End/Min", "Time Left"
     );
     println!("{}", "-".repeat(55));
-    for slot in &status.slots {
-        let time = if slot.secs_remaining == 0 {
-            "Expired".to_string()
+
+    let now = chrono::Utc::now().timestamp() as u64;
+
+    for (i, slot) in status.iter().enumerate() {
+        let elapsed = now.saturating_sub(slot.start_time_seconds);
+        let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
+
+        let start: Decimal = slot.start_gas.parse().unwrap_or_default();
+        let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+        let current_price =
+            start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
+
+        let secs_left = slot
+            .start_time_seconds
+            .saturating_add(slot.duration_seconds)
+            .saturating_sub(now);
+
+        let current_str = if slot.current_gas.is_some() {
+            format!("{:.4}", current_price)
         } else {
-            format!("{}s", slot.secs_remaining)
+            "(no bid)".to_string()
         };
+
         println!(
-            "{:<6} {:>14} {:>15} {}",
-            slot.slot_id,
-            slot.price,
-            time,
-            if slot.winner.is_empty() { "(none)" } else { &slot.winner }
+            "{:<6} {:>12} {:>14} {:>12} {:>10}s",
+            i,
+            slot.start_gas,
+            current_str,
+            slot.end_gas.as_deref().unwrap_or("-"),
+            secs_left
         );
     }
 }
