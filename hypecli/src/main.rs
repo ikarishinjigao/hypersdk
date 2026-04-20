@@ -4,6 +4,7 @@ mod markets;
 mod morpho;
 mod multisig;
 mod orders;
+mod orders_list;
 mod positions;
 mod prio;
 mod send;
@@ -20,6 +21,7 @@ use markets::{DexesCmd, PerpsCmd, SpotCmd};
 use morpho::{MorphoApyCmd, MorphoPositionCmd, MorphoVaultApyCmd};
 use multisig::MultiSigCmd;
 use orders::OrderCmd;
+use orders_list::OrdersCmd;
 use positions::PositionsCmd;
 use prio::PrioCmd;
 use send::SendCmd;
@@ -78,6 +80,9 @@ enum Command {
     Vault(VaultCmd),
     /// Query open perpetual positions for a user
     Positions(PositionsCmd),
+    /// Query historical orders or trade fills
+    #[command(subcommand)]
+    Orders(OrdersCmd),
     /// Gossip priority auction: query status or place a bid
     #[command(subcommand)]
     Prio(PrioCmd),
@@ -101,6 +106,7 @@ impl Command {
             Self::Send(cmd) => cmd.run().await,
             Self::Vault(cmd) => cmd.run().await,
             Self::Positions(cmd) => cmd.run().await,
+            Self::Orders(cmd) => cmd.run().await,
             Self::Prio(cmd) => cmd.run().await,
         }
     }
@@ -258,6 +264,18 @@ Query Open Positions:
 
   Shows size, side, entry price, unrealized PnL, leverage, liquidation price,
   margin used, and cumulative funding for each open position.
+
+Query Historical Orders:
+  hypecli orders list <ADDRESS>
+  hypecli orders list <ADDRESS> --coin BTC --format json
+
+Query Trade Fills:
+  hypecli orders fills <ADDRESS>
+  hypecli orders fills <ADDRESS> --coin BTC --format table
+
+  Common options for both:
+  --coin <SYMBOL>             Filter by asset
+  --format <pretty|table|json>
 
 ORDER COMMANDS
 --------------
