@@ -324,4 +324,37 @@ mod tests {
             "Recovered address should match the signer's address for RMP-based action"
         );
     }
+
+    #[test]
+    fn test_recover_batch_order_with_priority_rate() {
+        use rust_decimal::dec;
+        use types::{BatchOrder, OrderGrouping, OrderRequest, OrderTypePlacement, TimeInForce};
+
+        let signer = get_signer();
+        let expected_address = signer.address();
+
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: 0,
+                is_buy: true,
+                limit_px: dec!(50000),
+                sz: dec!(0.1),
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit { tif: TimeInForce::Ioc },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::PriorityRate(80_000),
+        };
+
+        let action = Action::Order(batch.clone());
+        let nonce = chrono::Utc::now().timestamp_millis() as u64;
+        let action_request = action
+            .sign_sync(&signer, nonce, None, None, Chain::Mainnet)
+            .unwrap();
+
+        let recovered = Action::Order(batch)
+            .recover(&action_request.signature, nonce, None, None, Chain::Mainnet)
+            .unwrap();
+        assert_eq!(recovered, expected_address);
+    }
 }

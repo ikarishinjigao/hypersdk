@@ -79,7 +79,7 @@ use alloy::{
     sol_types::eip712_domain,
 };
 use rust_decimal::Decimal;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::Error, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DisplayFromStr, serde_as};
 
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
@@ -1939,13 +1939,12 @@ impl OrderResponseStatus {
 /// # When to Use
 ///
 /// - **Single order**: Use a vec with one [`OrderRequest`]
-/// - **Multiple independent orders**: Set `grouping` to [`OrderGrouping::Na`]
-/// - **Bracket orders (TP/SL)**: Use [`OrderGrouping::NormalTpsl`] or [`OrderGrouping::PositionTpsl`]
+/// - **Multiple independent orders**: Set `grouping` to `"na"`
+/// - **Bracket orders (TP/SL)**: Use `"normalTpsl"` or `"positionTpsl"`
 ///
 /// # Related Types
 ///
 /// - [`OrderRequest`]: Individual order within the batch
-/// - [`OrderGrouping`]: Grouping strategy for the batch
 /// - [`OrderResponseStatus`]: Response status for each order
 /// - [`HttpClient::place`](crate::hypercore::http::Client::place): Method to submit orders
 ///
@@ -1972,6 +1971,30 @@ impl OrderResponseStatus {
 ///     grouping: OrderGrouping::Na,
 /// };
 /// ```
+///
+/// # Write Priority Example
+///
+/// ```no_run
+/// use hypersdk::hypercore::types::*;
+/// use rust_decimal::dec;
+///
+/// let prioritized = BatchOrder {
+///     orders: vec![
+///         OrderRequest {
+///             asset: 0, // BTC
+///             is_buy: true,
+///             limit_px: dec!(50000),
+///             sz: dec!(0.1),
+///             reduce_only: false,
+///             order_type: OrderTypePlacement::Limit {
+///                 tif: TimeInForce::Ioc, // Required for write priority
+///             },
+///             cloid: Default::default(),
+///         }
+///     ],
+///     grouping: OrderGrouping::PriorityRate(80_000), // 8 bps max
+/// };
+/// ```
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOrder {
@@ -1979,21 +2002,54 @@ pub struct BatchOrder {
     pub grouping: OrderGrouping,
 }
 
-/// Order grouping strategy.
+/// Grouping type for batch orders.
 ///
-/// Determines how orders are grouped when sent in a batch.
-///
-/// # Variants
-///
-/// - `Na` – No special grouping; orders are independent.
-/// - `NormalTpsl` – Link a main order with its take-profit/stop-loss orders.
-/// - `PositionTpsl` – Attach TP/SL orders to an existing position.
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+/// Serializes as a plain string (`"na"`, `"normalTpsl"`, `"positionTpsl"`) or as an
+/// object with a priority rate: `{"p": N}` where N is in units of 1/10_000_000 of
+/// filled notional (max 8 bps → `80_000`). All orders must be IOC.
+#[derive(Clone, Debug)]
 pub enum OrderGrouping {
     Na,
     NormalTpsl,
     PositionTpsl,
+    /// Pay a priority tip burned at fill time for faster matching.
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees#order-write-priority>
+    PriorityRate(u32),
+}
+
+impl Serialize for OrderGrouping {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Na => s.serialize_str("na"),
+            Self::NormalTpsl => s.serialize_str("normalTpsl"),
+            Self::PositionTpsl => s.serialize_str("positionTpsl"),
+            Self::PriorityRate(p) => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry("p", p)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderGrouping {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Obj { p: u32 },
+        }
+        match Raw::deserialize(d)? {
+            Raw::Str(s) => match s.as_str() {
+                "na" => Ok(Self::Na),
+                "normalTpsl" => Ok(Self::NormalTpsl),
+                "positionTpsl" => Ok(Self::PositionTpsl),
+                other => Err(Error::custom(format!("unknown grouping variant: {other}"))),
+            },
+            Raw::Obj { p } => Ok(Self::PriorityRate(p)),
+        }
+    }
 }
 
 /// A single order to be placed on the exchange.
@@ -2893,7 +2949,10 @@ struct RawGossipPriorityAuctionStatus(
 
 impl From<RawGossipPriorityAuctionStatus> for GossipPriorityAuctionStatus {
     fn from(raw: RawGossipPriorityAuctionStatus) -> Self {
-        Self { prev_winners: raw.0, slots: raw.1 }
+        Self {
+            prev_winners: raw.0,
+            slots: raw.1,
+        }
     }
 }
 
@@ -4004,5 +4063,64 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(trade.maker_address(), buyer);
+    }
+
+    // ─── OrderGrouping (write priority) ───────────────────────────────────────
+
+    #[test]
+    fn order_grouping_na_serialize() {
+        assert_eq!(
+            serde_json::to_string(&OrderGrouping::Na).unwrap(),
+            r#""na""#
+        );
+    }
+
+    #[test]
+    fn order_grouping_priority_rate_serialize() {
+        let json = serde_json::to_string(&OrderGrouping::PriorityRate(80_000)).unwrap();
+        assert_eq!(json, r#"{"p":80000}"#);
+    }
+
+    #[test]
+    fn order_grouping_deserialize_all_variants() {
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#""na""#).unwrap(),
+            OrderGrouping::Na
+        ));
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#""normalTpsl""#).unwrap(),
+            OrderGrouping::NormalTpsl
+        ));
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#"{"p":80000}"#).unwrap(),
+            OrderGrouping::PriorityRate(80_000)
+        ));
+    }
+
+    #[test]
+    fn batch_order_with_priority_rate_roundtrip() {
+        use rust_decimal::dec;
+
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: 0,
+                is_buy: true,
+                limit_px: dec!(50000),
+                sz: dec!(0.1),
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::Ioc,
+                },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::PriorityRate(80_000),
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        let parsed: BatchOrder = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed.grouping,
+            OrderGrouping::PriorityRate(80_000)
+        ));
     }
 }
